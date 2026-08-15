@@ -1,0 +1,46 @@
+version: 0.2
+
+env:
+  secrets-manager:
+    AWS_DEFAULT_REGION: "poc-pipeline-secrets:AWS_DEFAULT_REGION"
+    AWS_ACCOUNT_ID: "poc-pipeline-secrets:AWS_ACCOUNT_ID"
+    EKS_CLUSTER_NAME: "poc-pipeline-secrets:EKS_CLUSTER_NAME"
+    IMAGE_REPO_NAME: "poc-pipeline-secrets:IMAGE_REPO_NAME"
+    IMAGE_TAG: "poc-pipeline-secrets:IMAGE_TAG"
+    DEPLOYMENT_NAME: "poc-pipeline-secrets:DEPLOYMENT_NAME"
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - echo Setting up kubectl...
+      - aws eks --region $AWS_DEFAULT_REGION update-kubeconfig --name $EKS_CLUSTER_NAME
+      - echo Verifying kubectl setup...
+
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo Build completed on `date`
+      - echo Pushing the Docker image...
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo Updating Kubernetes Deployment...
+      - sed -i "s|^(\s*image:).*|\1 $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG|" k8s/vote_deploy_eks.yaml
+      - echo Committing the changes to the source repository...
+      - git config --global user.email "harishrao1195@gmail.com"
+      - git config --global user.name "Harishrao"
+      - git add k8s/vote_deploy_eks.yaml
+      - git commit -m "Updated deployment YAML with the new image tag and account details"
+      - git push origin main
+      - cat k8s/vote_deploy_eks.yaml
+	  
+  post_build:
+    commands:
+      - echo Applying the deployment to the cluster...
+      - kubectl apply -f k8s/vote_deploy_eks.yaml
+      - echo Restarting the deployment...
+      - kubectl rollout restart deployment vote-deployment
+      - echo Deployment complete.
